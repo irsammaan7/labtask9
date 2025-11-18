@@ -10,9 +10,15 @@ pipeline {
         }
         
         stage('Test') {
+            when {
+                expression { 
+                    return env.BRANCH_NAME == 'master' || env.BRANCH_NAME == 'main'
+                }
+            }
             steps {
                 echo 'Testing..'
                 echo 'Running unit tests...'
+                echo 'Tests run only on main/master branch'
             }
         }
         
@@ -27,15 +33,9 @@ pipeline {
     post {
         success {
             echo '✅ Pipeline executed successfully!'
-            echo 'All stages completed without errors'
-        }
-        failure {
-            echo '❌ Pipeline execution failed!'
-            echo 'Please check the logs for errors'
         }
         always {
-            echo '🧹 Cleaning up...'
-            echo 'Pipeline completed'
+            echo '🧹 Pipeline completed'
         }
     }
 }
