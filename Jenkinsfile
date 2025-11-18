@@ -1,11 +1,18 @@
 pipeline {
     agent any
     
+    environment {
+        APP_NAME = 'MyAwesomeApp'
+        VERSION = '1.0.0'
+        BUILD_ENV = 'production'
+    }
+    
     stages {
         stage('Build') {
             steps {
                 echo 'Building..'
-                echo 'Installing dependencies...'
+                echo "Building ${env.APP_NAME} version ${env.VERSION}"
+                echo "Target environment: ${env.BUILD_ENV}"
             }
         }
         
@@ -17,22 +24,21 @@ pipeline {
             }
             steps {
                 echo 'Testing..'
-                echo 'Running unit tests...'
-                echo 'Tests run only on main/master branch'
+                echo "Testing ${env.APP_NAME}..."
             }
         }
         
         stage('Deploy') {
             steps {
                 echo 'Deploying....'
-                echo 'Deployment completed successfully!'
+                echo "Deploying ${env.APP_NAME} v${env.VERSION} to ${env.BUILD_ENV}"
             }
         }
     }
     
     post {
         success {
-            echo '✅ Pipeline executed successfully!'
+            echo "✅ ${env.APP_NAME} pipeline completed successfully!"
         }
         always {
             echo '🧹 Pipeline completed'
