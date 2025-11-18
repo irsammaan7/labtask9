@@ -4,7 +4,11 @@ pipeline {
     environment {
         APP_NAME = 'MyAwesomeApp'
         VERSION = '1.0.0'
-        BUILD_ENV = 'production'
+    }
+    
+    parameters {
+        booleanParam(name: 'EXECUTE_TESTS', defaultValue: true, description: 'Run tests?')
+        choice(name: 'DEPLOY_ENV', choices: ['dev', 'staging', 'production'], description: 'Deployment environment')
     }
     
     stages {
@@ -12,36 +16,42 @@ pipeline {
             steps {
                 echo 'Building..'
                 echo "Building ${env.APP_NAME} version ${env.VERSION}"
-                echo "Target environment: ${env.BUILD_ENV}"
             }
         }
         
         stage('Test') {
             when {
                 expression { 
-                    return env.BRANCH_NAME == 'master' || env.BRANCH_NAME == 'main'
+                    return params.EXECUTE_TESTS == true
                 }
             }
             steps {
                 echo 'Testing..'
-                echo "Testing ${env.APP_NAME}..."
+                echo "Running tests for ${env.APP_NAME}..."
+                echo 'All tests passed!'
             }
         }
         
         stage('Deploy') {
             steps {
                 echo 'Deploying....'
-                echo "Deploying ${env.APP_NAME} v${env.VERSION} to ${env.BUILD_ENV}"
+                echo "Deploying to ${params.DEPLOY_ENV} environment"
+                echo "✅ Deployed ${env.APP_NAME} to ${params.DEPLOY_ENV}!"
             }
         }
     }
     
     post {
         success {
-            echo "✅ ${env.APP_NAME} pipeline completed successfully!"
+            echo "✅ Pipeline completed successfully!"
+            echo "Application deployed to ${params.DEPLOY_ENV}"
+        }
+        failure {
+            echo "❌ Pipeline failed!"
         }
         always {
-            echo '🧹 Pipeline completed'
+            echo '🧹 Cleaning up...'
+            echo 'Pipeline finished'
         }
     }
 }
