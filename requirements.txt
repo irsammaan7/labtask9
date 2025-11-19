@@ -4,3 +4,8 @@ Flask-Bcrypt
 Flask-SQLAlchemy
 python-dotenv
 WTForms
+Flask==3.0.0
+pytest==7.4.3
+pytest-cov==4.1.0
+bandit==1.7.5
+safety==2.3.5
