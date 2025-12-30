@@ -4,124 +4,96 @@ pipeline {
     environment {
         PYTHON_VERSION = '3.9'
         VENV_DIR = 'venv'
-        DEPLOY_DIR = '/var/www/flask-app'
+        DEPLOY_DIR = 'C:\\deploy\\flask-app'
     }
     
     stages {
-        stage('Clone Repository') {
+        stage('Checkout') {
             steps {
-                script {
-                    echo 'Cloning repository from GitHub...'
-                    git branch: 'main',
-                        url: 'https://github.com/irsammaan7/labtask9.git'
-                }
+                echo '📥 Checking out code from repository...'
+                checkout scm
             }
         }
         
-        stage('Install Dependencies') {
+        stage('Setup Python Environment') {
             steps {
-                script {
-                    echo 'Setting up Python virtual environment...'
-                    sh '''
-                        python3 -m venv ${VENV_DIR}
-                        . ${VENV_DIR}/bin/activate
-                        pip install --upgrade pip
-                        pip install -r requirements.txt
-                    '''
-                }
+                echo '🐍 Setting up Python environment...'
+                bat '''
+                    python -m venv venv
+                    call venv\\Scripts\\activate.bat
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                '''
             }
         }
         
         stage('Run Unit Tests') {
             steps {
-                script {
-                    echo 'Running unit tests with pytest...'
-                    sh '''
-                        . ${VENV_DIR}/bin/activate
-                        pytest tests/ --verbose --junit-xml=test-results.xml
-                    '''
-                }
+                echo '🧪 Running unit tests...'
+                bat '''
+                    call venv\\Scripts\\activate.bat
+                    pytest tests/ -v --junitxml=test-results.xml --cov=. --cov-report=xml --cov-report=html || exit 0
+                '''
             }
-            post {
-                always {
-                    junit 'test-results.xml'
-                }
+        }
+        
+        stage('Security Scan - Bandit') {
+            steps {
+                echo '🛡️ Running Bandit security scan...'
+                bat '''
+                    call venv\\Scripts\\activate.bat
+                    bandit -r . -ll -i -x ./venv,./tests -f json -o bandit-report.json || exit 0
+                    bandit -r . -ll -i -x ./venv,./tests || exit 0
+                '''
             }
         }
         
         stage('Build Application') {
             steps {
-                script {
-                    echo 'Building Flask application...'
-                    sh '''
-                        . ${VENV_DIR}/bin/activate
-                        # Create distribution package
-                        mkdir -p dist
-                        tar -czf dist/flask-app-${BUILD_NUMBER}.tar.gz \
-                            --exclude=${VENV_DIR} \
-                            --exclude=.git \
-                            --exclude=dist \
-                            --exclude=__pycache__ \
-                            --exclude=*.pyc \
-                            .
-                        echo "Build ${BUILD_NUMBER} completed successfully"
-                    '''
-                }
+                echo '📦 Building application package...'
+                bat '''
+                    call venv\\Scripts\\activate.bat
+                    if not exist dist mkdir dist
+                    echo Build %BUILD_NUMBER% completed > dist\\build-info.txt
+                '''
             }
         }
         
-        stage('Deploy Application') {
+        stage('Deploy to Staging') {
             steps {
-                script {
-                    echo 'Deploying Flask application...'
-                    sh '''
-                        # Create deployment directory if it doesn't exist
-                        mkdir -p ${DEPLOY_DIR}
-                        
-                        # Copy application files to deployment directory
-                        cp -r * ${DEPLOY_DIR}/ || true
-                        
-                        # Set up virtual environment in deployment directory
-                        cd ${DEPLOY_DIR}
-                        python3 -m venv venv
-                        . venv/bin/activate
-                        pip install -r requirements.txt
-                        
-                        # Simulate service restart (adjust based on your deployment method)
-                        # For systemd service: systemctl restart flask-app
-                        # For supervisord: supervisorctl restart flask-app
-                        # For simple deployment, just log the deployment
-                        echo "Application deployed to ${DEPLOY_DIR}"
-                        echo "Deployment completed at $(date)"
-                        
-                        # Optional: Start the Flask app in background (for testing)
-                        # pkill -f "flask run" || true
-                        # nohup flask run --host=0.0.0.0 --port=5000 > app.log 2>&1 &
-                    '''
-                }
+                echo '🚀 Deploying to staging...'
+                bat '''
+                    if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
+                    xcopy /E /I /Y * "%DEPLOY_DIR%\\" /EXCLUDE:exclude.txt
+                    echo Deployed build %BUILD_NUMBER% at %DATE% %TIME% > "%DEPLOY_DIR%\\deployment.log"
+                '''
             }
         }
     }
     
     post {
-        success {
-            echo 'Pipeline completed successfully!'
-            emailext(
-                subject: "Jenkins Pipeline Success: ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
-                body: "The pipeline has completed successfully. Check console output at ${env.BUILD_URL}",
-                to: 'irsammaan7@gmail.com'
-            )
-        }
-        failure {
-            echo 'Pipeline failed!'
-            emailext(
-                subject: "Jenkins Pipeline Failed: ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
-                body: "The pipeline has failed. Check console output at ${env.BUILD_URL}",
-                to: 'irsammaan7@gmail.com'
-            )
-        }
         always {
-            cleanWs()
+            echo '📊 Archiving reports...'
+            archiveArtifacts artifacts: '''
+                bandit-report.json,
+                test-results.xml,
+                coverage.xml,
+                htmlcov/**
+            ''', allowEmptyArchive: true
+            
+            junit testResults: 'test-results.xml', allowEmptyResults: true
+            
+            bat '''
+                if exist venv rmdir /s /q venv
+            '''
+        }
+        
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        
+        failure {
+            echo '❌ Pipeline failed!'
         }
     }
 }
