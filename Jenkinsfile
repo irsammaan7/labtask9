@@ -2,285 +2,126 @@ pipeline {
     agent any
     
     environment {
-        DOCKER_IMAGE = "flask-app"
-        DOCKER_TAG = "${BUILD_NUMBER}"
-        SONAR_PROJECT_KEY = "flask-app"
+        PYTHON_VERSION = '3.9'
+        VENV_DIR = 'venv'
+        DEPLOY_DIR = '/var/www/flask-app'
     }
     
     stages {
-        stage('Checkout') {
+        stage('Clone Repository') {
             steps {
-                echo '📥 Checking out code from repository...'
-                checkout scm
-            }
-        }
-        
-        stage('Setup Python Environment') {
-            steps {
-                echo '🐍 Setting up Python environment...'
-                bat '''
-                    python -m venv venv
-                    call venv\\Scripts\\activate.bat
-                    python -m pip install --upgrade pip
-                    pip install -r requirements.txt
-                '''
-            }
-        }
-        
-        stage('Static Code Analysis - SonarQube') {
-            steps {
-                echo '🔍 Running SonarQube SAST scan...'
                 script {
-                    def scannerHome = tool 'SonarScanner'
-                    withSonarQubeEnv('SonarQube-Server') {
-                        bat """
-                            "${scannerHome}\\bin\\sonar-scanner.bat" ^
-                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} ^
-                            -Dsonar.sources=. ^
-                            -Dsonar.host.url=%SONAR_HOST_URL% ^
-                            -Dsonar.login=%SONAR_AUTH_TOKEN%
-                        """
-                    }
+                    echo 'Cloning repository from GitHub...'
+                    git branch: 'main',
+                        url: 'https://github.com/irsammaan7/labtask9.git'
                 }
             }
         }
         
-        stage('Quality Gate') {
+        stage('Install Dependencies') {
             steps {
-                echo '🚦 Checking SonarQube Quality Gate...'
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: false
+                script {
+                    echo 'Setting up Python virtual environment...'
+                    sh '''
+                        python3 -m venv ${VENV_DIR}
+                        . ${VENV_DIR}/bin/activate
+                        pip install --upgrade pip
+                        pip install -r requirements.txt
+                    '''
                 }
             }
         }
         
-        stage('Security Scan - Bandit') {
+        stage('Run Unit Tests') {
             steps {
-                echo '🛡️ Running Bandit security scan...'
-                bat '''
-                    call venv\\Scripts\\activate.bat
-                    bandit -r . -ll -i -x ./venv,./tests -f json -o bandit-report.json || exit 0
-                    bandit -r . -ll -i -x ./venv,./tests || exit 0
-                '''
-            }
-        }
-        
-        stage('Dependency Check - Safety') {
-            steps {
-                echo '📦 Checking dependencies for vulnerabilities...'
-                bat '''
-                    call venv\\Scripts\\activate.bat
-                    safety check --json > safety-report.json || exit 0
-                    safety check || exit 0
-                '''
-            }
-        }
-        
-        stage('Unit Tests') {
-            steps {
-                echo '🧪 Running unit tests...'
-                bat '''
-                    call venv\\Scripts\\activate.bat
-                    pytest tests/ -v --junitxml=test-results.xml --cov=. --cov-report=xml --cov-report=html || exit 0
-                '''
-            }
-        }
-        
-        stage('Build Docker Image') {
-            steps {
-                echo '🐳 Building Docker image...'
                 script {
-                    // Use WSL to run Docker commands
-                    bat """
-                        wsl docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-                        wsl docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
-                    """
+                    echo 'Running unit tests with pytest...'
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        pytest tests/ --verbose --junit-xml=test-results.xml
+                    '''
+                }
+            }
+            post {
+                always {
+                    junit 'test-results.xml'
                 }
             }
         }
         
-        stage('Container Security Scan - Trivy') {
+        stage('Build Application') {
             steps {
-                echo '🔒 Scanning Docker image for vulnerabilities...'
                 script {
-                    // Use Trivy via Docker in WSL
-                    bat """
-                        wsl docker run --rm ^
-                            -v /var/run/docker.sock:/var/run/docker.sock ^
-                            aquasec/trivy:latest image ^
-                            --severity HIGH,CRITICAL ^
-                            --format json ^
-                            --output trivy-report.json ^
-                            ${DOCKER_IMAGE}:${DOCKER_TAG} || exit 0
-                        
-                        wsl docker run --rm ^
-                            -v /var/run/docker.sock:/var/run/docker.sock ^
-                            aquasec/trivy:latest image ^
-                            --severity HIGH,CRITICAL ^
-                            ${DOCKER_IMAGE}:${DOCKER_TAG} || exit 0
-                    """
+                    echo 'Building Flask application...'
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        # Create distribution package
+                        mkdir -p dist
+                        tar -czf dist/flask-app-${BUILD_NUMBER}.tar.gz \
+                            --exclude=${VENV_DIR} \
+                            --exclude=.git \
+                            --exclude=dist \
+                            --exclude=__pycache__ \
+                            --exclude=*.pyc \
+                            .
+                        echo "Build ${BUILD_NUMBER} completed successfully"
+                    '''
                 }
             }
         }
         
-        stage('Security Gate Check') {
+        stage('Deploy Application') {
             steps {
-                echo '🚨 Evaluating security scan results...'
                 script {
-                    try {
-                        def criticalIssues = 0
-                        def highSeverityBandit = 0
+                    echo 'Deploying Flask application...'
+                    sh '''
+                        # Create deployment directory if it doesn't exist
+                        mkdir -p ${DEPLOY_DIR}
                         
-                        // Check Bandit results
-                        if (fileExists('bandit-report.json')) {
-                            def banditReport = readJSON file: 'bandit-report.json'
-                            highSeverityBandit = banditReport.results.findAll { 
-                                it.issue_severity == 'HIGH' 
-                            }.size()
-                        }
+                        # Copy application files to deployment directory
+                        cp -r * ${DEPLOY_DIR}/ || true
                         
-                        // Check Trivy results
-                        if (fileExists('trivy-report.json')) {
-                            def trivyReport = readJSON file: 'trivy-report.json'
-                            if (trivyReport.Results) {
-                                trivyReport.Results.each { result ->
-                                    if (result.Vulnerabilities) {
-                                        result.Vulnerabilities.each { vuln ->
-                                            if (vuln.Severity == 'CRITICAL') {
-                                                criticalIssues++
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        # Set up virtual environment in deployment directory
+                        cd ${DEPLOY_DIR}
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install -r requirements.txt
                         
-                        echo "🔍 Security Summary:"
-                        echo "   - Critical vulnerabilities in image: ${criticalIssues}"
-                        echo "   - High severity code issues: ${highSeverityBandit}"
+                        # Simulate service restart (adjust based on your deployment method)
+                        # For systemd service: systemctl restart flask-app
+                        # For supervisord: supervisorctl restart flask-app
+                        # For simple deployment, just log the deployment
+                        echo "Application deployed to ${DEPLOY_DIR}"
+                        echo "Deployment completed at $(date)"
                         
-                        // Warning instead of failing (adjust as needed)
-                        if (criticalIssues > 10) {
-                            unstable("⚠️ Warning: ${criticalIssues} critical vulnerabilities found!")
-                        }
-                        
-                        if (highSeverityBandit > 5) {
-                            echo "⚠️ Warning: High number of security issues in code. Review recommended."
-                        }
-                        
-                        if (criticalIssues == 0 && highSeverityBandit == 0) {
-                            echo "✅ No critical security issues found!"
-                        }
-                        
-                    } catch (Exception e) {
-                        echo "⚠️ Warning: Could not parse security reports: ${e.message}"
-                    }
-                }
-            }
-        }
-        
-        stage('Deploy to Staging') {
-            steps {
-                echo '🚀 Deploying to staging environment...'
-                script {
-                    bat """
-                        wsl docker stop flask-app-staging || exit 0
-                        wsl docker rm flask-app-staging || exit 0
-                        
-                        wsl docker run -d ^
-                            --name flask-app-staging ^
-                            -p 5001:5000 ^
-                            ${DOCKER_IMAGE}:${DOCKER_TAG}
-                        
-                        timeout /t 5 /nobreak
-                    """
-                    
-                    // Test the deployment
-                    try {
-                        bat 'curl -f http://localhost:5001/ || exit 0'
-                        echo '✅ Staging deployment successful!'
-                    } catch (Exception e) {
-                        echo '⚠️ Could not verify staging deployment'
-                    }
-                }
-            }
-        }
-        
-        stage('Approval for Production') {
-            steps {
-                echo '⏸️ Waiting for manual approval...'
-                input message: 'Deploy to Production?', ok: 'Deploy'
-            }
-        }
-        
-        stage('Deploy to Production') {
-            when {
-                branch 'main'
-            }
-            steps {
-                echo '🎯 Deploying to production environment...'
-                script {
-                    bat """
-                        wsl docker stop flask-app-prod || exit 0
-                        wsl docker rm flask-app-prod || exit 0
-                        
-                        wsl docker run -d ^
-                            --name flask-app-prod ^
-                            -p 5000:5000 ^
-                            --restart unless-stopped ^
-                            ${DOCKER_IMAGE}:${DOCKER_TAG}
-                        
-                        timeout /t 5 /nobreak
-                    """
-                    
-                    // Test the deployment
-                    try {
-                        bat 'curl -f http://localhost:5000/ || exit 0'
-                        echo '✅ Production deployment successful!'
-                    } catch (Exception e) {
-                        echo '⚠️ Could not verify production deployment'
-                    }
+                        # Optional: Start the Flask app in background (for testing)
+                        # pkill -f "flask run" || true
+                        # nohup flask run --host=0.0.0.0 --port=5000 > app.log 2>&1 &
+                    '''
                 }
             }
         }
     }
     
     post {
-        always {
-            echo '📊 Archiving reports and cleaning up...'
-            
-            // Archive security reports
-            archiveArtifacts artifacts: '''
-                bandit-report.json,
-                safety-report.json,
-                trivy-report.json,
-                test-results.xml,
-                coverage.xml,
-                htmlcov/**
-            ''', allowEmptyArchive: true
-            
-            // Publish test results
-            junit testResults: 'test-results.xml', allowEmptyResults: true
-            
-            // Cleanup
-            bat '''
-                if exist venv rmdir /s /q venv
-            '''
-        }
-        
         success {
-            echo '✅ Pipeline completed successfully!'
-            echo '🎉 Application deployed with security checks passed!'
+            echo 'Pipeline completed successfully!'
+            emailext(
+                subject: "Jenkins Pipeline Success: ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
+                body: "The pipeline has completed successfully. Check console output at ${env.BUILD_URL}",
+                to: 'irsammaan7@gmail.com'
+            )
         }
-        
         failure {
-            echo '❌ Pipeline failed!'
-            echo '🔍 Check the security reports and logs above for details.'
+            echo 'Pipeline failed!'
+            emailext(
+                subject: "Jenkins Pipeline Failed: ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
+                body: "The pipeline has failed. Check console output at ${env.BUILD_URL}",
+                to: 'irsammaan7@gmail.com'
+            )
         }
-        
-        unstable {
-            echo '⚠️ Pipeline completed with warnings!'
-            echo '📝 Review the security findings before proceeding.'
+        always {
+            cleanWs()
         }
     }
 }
